@@ -96,8 +96,8 @@ process {
                 if (($AdHoc -and ($_."FinalizeMigration" -ieq "True")) -or ( !$AdHoc ) ) {
                     # Only if AdHoc is enabled and "FinalizeMigration" is set to "True" (not case sensitive) OR if AdHoc is $false 
                     $UserName = $_."UserName"
-                    $UserSrcPath = $_."UserSrcPath"
-                    $UserDstPath = $_."UserDstPath"
+                    $UserSrcPath = [STRING]::Format("{0}\{1}", ($_."UserSrcPath").TrimEnd("\"), $UserName)
+                    $UserDstPath = [STRING]::Format("{0}\{1}", ($_."UserDstPath").TrimEnd("\"), $UserName)
                     # user Log file name 
                     $UserLogFileName = "$($TimeStamp)_$($UserName).log"
                     $UserRobocopyLogFileName = "$($TimeStamp)_$($UserName)_Robocopy.log"
@@ -105,36 +105,59 @@ process {
                     Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Starting migration of user '$UserName'."
                     # If user source and destination paths exist 
                     if (Test-Path -Path $UserSrcPath) { 
-                        if (Test-Path -Path $UserDstPath) { 
-                            # Define robocopy argument list 
-                            $RobocopyArguments = @("`"$UserSrcPath`"", "`"$UserDstPath`"", "*.*", "/MIR", "/R:5", "/W:10", "/LOG+:`"$logDirectory\$UserRobocopyLogFileName`"")
-                            # Logging 
-                            Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Starting robocopy with arguments '$($RobocopyArguments -join ' ')'."    
-                            # Start robocopy job
-                            $objProc = Start-Process -FilePath "C:\windows\System32\Robocopy.exe" -ArgumentList $RobocopyArguments -NoNewWindow -Wait -PassThru 
-                            # analyse exit codes. normally everything bellow 8 is just a warning or success 
-                            Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Robocopy exit code '$($objProc.ExitCode)'."  
-                            if ($objProc.ExitCode -lt 8) {
-                                Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Robocopy was successful." 
-                                # Set LastMigration to Success and set date
-                                $_."LastMigrationResult" = "SUCCESS"
-                                $_."LastMigration" = $TimeStampForCSV
-                                # If it was a AdHoc User migration, set MigrationActive to False 
-                                if (($_."FinalizeMigration" -ieq "True")) {
-                                    $_."MigrationActive" = "False"
-                                    $_."LastMigration" = $TimeStampForCSV
-                                }
-                            } else {
-                                Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Robocopy failed."
-                                $_."LastMigrationResult" = "FAILED"
-                                $_."LastMigration" = $TimeStampForCSV
-                            }
-                        }
-                        else {
+                        
+                        if ( ! (Test-Path -Path $UserDstPath)) { 
                             Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "UserDstPath does not exist! '$UserDstPath'"  
-                            $_."LastMigrationResult" = "FAILED"
-                            $_."LastMigration" = $TimeStampForCSV
+                            Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Create UserDstPath '$UserDstPath'"  
+                            [System.IO.Directory]::CreateDirectory($UserDstPath)
+
                         }
+                        #if owner exist, we have to hijack the ownership.
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "UserDstPath does exist! '$UserDstPath'"  
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Hijack UserDstPath '$UserDstPath'" 
+                        #Create new owner ship.
+                        [System.Security.AccessControl.FileSystemSecurity]$UserDstPathACL = Get-ACL -Path $UserDstPath
+                        [System.Security.Principal.IdentityReference]$mySecurityPrinciple = New-Object System.Security.Principal.NTAccount($env:UserDomain, $env:UserName)
+                        $UserDstPathACL.SetOwner($mySecurityPrinciple)
+                        Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
+                        #add write/read access to folder and subfolder/subfiles.
+                        [System.Security.AccessControl.AccessRule]$myAccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("$env:UserDomain\$env:UserName",'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
+                        $UserDstPathACL.AddAccessRule($myAccessRule)
+                        Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
+                        
+                         # Define robocopy argument list 
+                         $RobocopyArguments = @("`"$UserSrcPath`"", "`"$UserDstPath`"", "*.*", "/MIR", "/R:5", "/W:10", "/LOG+:`"$logDirectory\$UserRobocopyLogFileName`"")
+                         # Logging 
+                         Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Starting robocopy with arguments '$($RobocopyArguments -join ' ')'."    
+                         # Start robocopy job
+                         $objProc = Start-Process -FilePath "C:\windows\System32\Robocopy.exe" -ArgumentList $RobocopyArguments -NoNewWindow -Wait -PassThru 
+                         # analyse exit codes. normally everything bellow 8 is just a warning or success 
+                         Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Robocopy exit code '$($objProc.ExitCode)'."  
+                         if ($objProc.ExitCode -lt 8) {
+                             Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Robocopy was successful." 
+                             # Set LastMigration to Success and set date
+                             $_."LastMigrationResult" = "SUCCESS"
+                             $_."LastMigration" = $TimeStampForCSV
+                             # If it was a AdHoc User migration, set MigrationActive to False 
+                             if (($_."FinalizeMigration" -ieq "True")) {
+                                 $_."MigrationActive" = "False"
+                                 $_."LastMigration" = $TimeStampForCSV
+                             }
+                         } else {
+                             Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Robocopy failed."
+                             $_."LastMigrationResult" = "FAILED"
+                             $_."LastMigration" = $TimeStampForCSV
+                         }
+                         
+                        #return and reset ownership and access rights.
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Reset ownership for '$env:UserDomain\$UserName' to UserDstPath '$UserDstPath'" 
+                        [System.Security.AccessControl.FileSystemSecurity]$UserDstPathACL = Get-ACL -Path $UserDstPath
+                        [System.Security.Principal.IdentityReference]$userSecurityPrinciple = New-Object System.Security.Principal.NTAccount($env:UserDomain, $UserName)
+                        $UserDstPathACL.SetOwner($userSecurityPrinciple)
+                        #remove access rights.
+                        $UserDstPathACL.RemoveAccessRule($myAccessRule)
+                        $aclResult = Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Reset access rights: $aclResult" 
                     }
                     else {
                         Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "UserSrcPath does not exist! '$UserSrcPath'"  
