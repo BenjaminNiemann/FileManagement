@@ -16,6 +16,7 @@
 
 .NOTES
     09.11.2020: Created by Michael Bachmann - Perinova IT-Management GmbH 
+    02.12.2020: Added Accessrights managment - Benjamin Niemann - Perinova IT-Management GmbH
 
     Min. PS Version 5 
 
@@ -109,19 +110,22 @@ process {
                         if ( ! (Test-Path -Path $UserDstPath)) { 
                             Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "UserDstPath does not exist! '$UserDstPath'"  
                             Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Create UserDstPath '$UserDstPath'"  
-                            [System.IO.Directory]::CreateDirectory($UserDstPath)
+                            $return = [System.IO.Directory]::CreateDirectory($UserDstPath)
 
                         }
                         #if owner exist, we have to hijack the ownership.
                         Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "UserDstPath does exist! '$UserDstPath'"  
-                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Hijack UserDstPath '$UserDstPath'" 
+
                         #Create new owner ship.
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Hijack ownership of '$UserDstPath'" 
                         [System.Security.AccessControl.FileSystemSecurity]$UserDstPathACL = Get-ACL -Path $UserDstPath
                         [System.Security.Principal.IdentityReference]$mySecurityPrinciple = New-Object System.Security.Principal.NTAccount($env:UserDomain, $env:UserName)
                         $UserDstPathACL.SetOwner($mySecurityPrinciple)
                         Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
+                        
                         #add write/read access to folder and subfolder/subfiles.
-                        [System.Security.AccessControl.AccessRule]$myAccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("$env:UserDomain\$env:UserName",'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Hijack access rights of '$UserDstPath'" 
+                        [System.Security.AccessControl.AccessRule]$myAccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("$env:UserDomain\$env:UserName",'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
                         $UserDstPathACL.AddAccessRule($myAccessRule)
                         Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
                         
@@ -148,16 +152,31 @@ process {
                              $_."LastMigrationResult" = "FAILED"
                              $_."LastMigration" = $TimeStampForCSV
                          }
-                         
-                        #return and reset ownership and access rights.
-                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Reset ownership for '$env:UserDomain\$UserName' to UserDstPath '$UserDstPath'" 
+
+                        #System and user principal have to be added, so wf can work.
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Reset access rights for '$env:UserDomain\$UserName' to UserDstPath '$UserDstPath'" 
                         [System.Security.AccessControl.FileSystemSecurity]$UserDstPathACL = Get-ACL -Path $UserDstPath
                         [System.Security.Principal.IdentityReference]$userSecurityPrinciple = New-Object System.Security.Principal.NTAccount($env:UserDomain, $UserName)
+                        [System.Security.AccessControl.AccessRule]$usersAccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("$env:UserDomain\$UserName",'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+                        [System.Security.AccessControl.AccessRule]$systemAccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule("NT AUTHORITY\SYSTEM",'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+                        
+                        #Disable inheritance on user folder.
+                        $UserDstPathACL.SetAccessRuleProtection($True, $false)                       
+                        #Add user and system to acl.
+                        $UserDstPathACL.AddAccessRule($usersAccessRule)
+                        $UserDstPathACL.AddAccessRule($systemAccessRule)
+                        Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
+
+                        #Reset ownership for all folders to users principal.
+                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Reset owner for '$env:UserDomain\$UserName' to UserDstPath '$UserDstPath'" 
+                        (Get-ChildItem -Path $UserDstPath).Foreach{
+                            $acl = Get-ACL -Path $_.Fullname
+                            $acl.SetOwner($userSecurityPrinciple)
+                            Set-Acl -Path $_.FullName -AclObject $acl
+                        }
                         $UserDstPathACL.SetOwner($userSecurityPrinciple)
-                        #remove access rights.
-                        $UserDstPathACL.RemoveAccessRule($myAccessRule)
-                        $aclResult = Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
-                        Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "Reset access rights: $aclResult" 
+                        Set-Acl -Path $UserDstPath -AclObject $UserDstPathACL
+
                     }
                     else {
                         Write-Log -LogFile "$($logDirectory)\$($UserLogFileName)" -Message "UserSrcPath does not exist! '$UserSrcPath'"  
